@@ -3,9 +3,9 @@ const BACKEND_HEALTH_URL = "http://localhost:8765/health";
 const toggleBtn = document.getElementById("toggle-btn");
 const btnIcon = document.getElementById("btn-icon");
 const btnLabel = document.getElementById("btn-label");
+const errorBanner = document.getElementById("error-banner");
 const errorText = document.getElementById("error-text");
-const fastModelSelect = document.getElementById("fastModelSelect");
-const contextModelSelect = document.getElementById("contextModelSelect");
+const modelSelect = document.getElementById("modelSelect");
 const archSelect = document.getElementById("archSelect");
 const spokenLangSelect = document.getElementById("spokenLangSelect");
 const vadSlider = document.getElementById("vadSlider");
@@ -31,16 +31,10 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
 
     initSidebarWebSocket();
-    chrome.storage.local.get(["vadThreshold", "fastModel", "contextModel", "archSelect", "spokenLangSelect"], (res) => {
+    chrome.storage.local.get(["vadThreshold", "archSelect", "spokenLangSelect", "ollamaModel"], (res) => {
         if (res.vadThreshold !== undefined) {
             if (vadSlider) vadSlider.value = res.vadThreshold;
             if (vadValue) vadValue.textContent = res.vadThreshold;
-        }
-        if (res.fastModel !== undefined) {
-            fastModelSelect.value = res.fastModel;
-        }
-        if (res.contextModel !== undefined) {
-            contextModelSelect.value = res.contextModel;
         }
         if (res.archSelect !== undefined) {
             archSelect.value = res.archSelect;
@@ -117,8 +111,7 @@ async function syncState() {
 function setupEventListeners() {
     archSelect.addEventListener("change", (e) => chrome.storage.local.set({ archSelect: e.target.value }));
     spokenLangSelect.addEventListener("change", (e) => chrome.storage.local.set({ spokenLangSelect: e.target.value }));
-    fastModelSelect.addEventListener("change", (e) => chrome.storage.local.set({ fastModel: e.target.value }));
-    contextModelSelect.addEventListener("change", (e) => chrome.storage.local.set({ contextModel: e.target.value }));
+    modelSelect.addEventListener("change", (e) => chrome.storage.local.set({ ollamaModel: e.target.value }));
 
     vadSlider.addEventListener("input", (e) => vadValue.textContent = e.target.value);
     vadSlider.addEventListener("change", (e) => chrome.storage.local.set({ vadThreshold: e.target.value }));

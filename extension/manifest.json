@@ -1,0 +1,43 @@
+{
+    "manifest_version": 3,
+    "name": "Meet Live Translator",
+    "version": "1.0.0",
+    "description": "Real-time English ↔ Japanese translation for Google Meet — 100% local, privacy-first.",
+    "permissions": [
+        "tabCapture",
+        "offscreen",
+        "activeTab",
+        "storage",
+        "sidePanel"
+    ],
+    "host_permissions": [
+        "<all_urls>"
+    ],
+    "background": {
+        "service_worker": "background.js"
+    },
+    "side_panel": {
+        "default_path": "popup.html"
+    },
+    "action": {
+        "default_icon": {
+            "16": "icons/icon16.png",
+            "48": "icons/icon48.png",
+            "128": "icons/icon128.png"
+        },
+        "default_title": "Meet Live Translator"
+    },
+    "icons": {
+        "16": "icons/icon16.png",
+        "48": "icons/icon48.png",
+        "128": "icons/icon128.png"
+    },
+    "commands": {
+        "toggle-translation": {
+            "suggested_key": {
+                "default": "Alt+T"
+            },
+            "description": "Start or stop live translation"
+        }
+    }
+}

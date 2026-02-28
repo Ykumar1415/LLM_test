@@ -1,14 +1,20 @@
 from __future__ import annotations
 
-import logging
 import json
-import urllib.request
+import logging
 import urllib.error
+import urllib.request
 from typing import NamedTuple
 
 from . import config
 
 logger = logging.getLogger(__name__)
+
+SYSTEM_PROMPT = (
+    "You are a professional translator. "
+    "Translate English to natural Japanese. "
+    "Output ONLY the Japanese translation with no explanations, notes, or English text."
+)
 
 
 class TranslationResult(NamedTuple):
@@ -19,125 +25,128 @@ class TranslationResult(NamedTuple):
 
 
 class TranslationEngine:
-    def __init__(self, engine_type: str = config.TRANSLATION_ENGINE):
-        self._engine_type = engine_type
-        if self._engine_type == "ollama":
-            self.model_id = config.OLLAMA_MODEL
-        else:
-            raise ValueError(f"Unknown translation engine: {engine_type}")
+    """Translates English text to Japanese using Ollama."""
+
+    def __init__(self):
+        self.model_id = config.OLLAMA_MODEL
 
     def load(self) -> None:
-        logger.info("Translation engine initialized: %s (%s)", self._engine_type, self.model_id)
+        logger.info("Translation engine initialized: Ollama (%s)", self.model_id)
 
     @property
     def is_loaded(self) -> bool:
         return True
 
-    def translate(self, text: str, source_lang: str, session_context=None) -> TranslationResult:
-        if not text.strip() or source_lang == "en":
-            return TranslationResult(text=text, source_lang="en", target_lang="en", cached=True)
-
-        if self._engine_type == "ollama":
-            return self._translate_ollama(text, source_lang, session_context)
-            
-        return TranslationResult(text="[Error] Unsupported engine", source_lang=source_lang, target_lang="en")
-
-    def summarize(self, history: list[str], previous_summary: str | None = None) -> str | None:
-        if not history:
-            return None
-            
-        if self._engine_type == "ollama":
-            return self._summarize_ollama(history, previous_summary)
-            
-        return None
-
-    def _translate_ollama(self, text: str, source_lang: str, session_context) -> TranslationResult:
-        url = "http://localhost:11434/api/generate"
-        
-        if source_lang == "ja":
-            direction = "Japanese to English"
-        elif source_lang == "en":
-            direction = "English to Japanese"
-        else:
-            direction = f"'{source_lang}' to English"
-
-        model_name = self.model_id.lower()
-        
-        if "tinyllama" in model_name or "gemma2" in model_name:
-            if source_lang == "ja":
-                prompt = f"Japanese: こんにちは\nEnglish: Hello\nJapanese: ありがとうございます\nEnglish: Thank you\nJapanese: {text}\nEnglish:"
-            else:
-                prompt = f"English: Hello\nJapanese: こんにちは\nEnglish: Thank you\nJapanese: ありがとうございます\nEnglish: {text}\nJapanese:"
-        else:
-            prompt = (
-                f"You are a professional {direction} translator. "
-                "Output ONLY the translation, without any notes, apologies, or extra text.\n\n"
+    def translate(
+        self, text: str, source_lang: str = "en", session_context=None
+    ) -> TranslationResult:
+        """Translate English text to Japanese."""
+        if not text.strip():
+            return TranslationResult(
+                text=text, source_lang="en", target_lang="ja", cached=True
             )
-            
-            recent_context = session_context.get_prompt() if session_context else None
-            if recent_context:
-                prompt += f"Recent conversation context: {recent_context}\n\n"
-            
-            prompt += f"Text to translate:\n<text>\n{text}\n</text>\nTranslation:"
 
+        return self._translate_ollama(text)
+
+    def _translate_ollama(self, text: str) -> TranslationResult:
+        prompt = f"Translate this English to natural Japanese:\n\n{text}\n\nJapanese:"
         data = {
             "model": self.model_id,
             "prompt": prompt,
             "stream": False,
-            "options": {
-                "temperature": 0.1, 
-                "num_ctx": 4096,
-                "num_thread": 4
-            }
+            "system": SYSTEM_PROMPT,
+            "options": {"temperature": 0.3, "num_ctx": 4096, "num_thread": 4},
         }
 
-        req = urllib.request.Request(url, data=json.dumps(data).encode("utf-8"), headers={"Content-Type": "application/json"})
+        req = urllib.request.Request(
+            config.OLLAMA_URL,
+            data=json.dumps(data).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+        )
         try:
-            with urllib.request.urlopen(req, timeout=15) as response:
+            with urllib.request.urlopen(req, timeout=30) as response:
                 result = json.loads(response.read().decode("utf-8"))
                 translated = result.get("response", "").strip()
-                
-                if translated.lower().startswith("here is the translation"):
-                    translated = translated.split("\n", 1)[-1].strip()
-                    
+
+                cleanup_phrases = [
+                    "You are a professional English to Japanese translator",
+                    "Your task is to translate",
+                    "Follow these rules",
+                    "Here is the translation",
+                    "Translation:",
+                    "Japanese:",
+                    "Natural Japanese translation:",
+                ]
+
+                for phrase in cleanup_phrases:
+                    if phrase.lower() in translated.lower():
+                        idx = translated.lower().rfind(phrase.lower())
+                        translated = translated[idx + len(phrase) :].strip()
+
+                for i, char in enumerate(translated):
+                    if (
+                        "\u3040" <= char <= "\u309f"
+                        or "\u30a0" <= char <= "\u30ff"
+                        or "\u4e00" <= char <= "\u9fff"
+                    ):
+                        translated = translated[i:]
+                        break
+
+                if translated.startswith(('"', "'", "「")):
+                    translated = translated.strip("\"'「」")
+
+                if any(
+                    eng_word in translated
+                    for eng_word in [
+                        "translate",
+                        "English",
+                        "Japanese",
+                        "task",
+                        "professional",
+                    ]
+                ):
+                    lines = translated.split("\n")
+                    japanese_lines = []
+                    for line in lines:
+                        if any(
+                            "\u3040" <= c <= "\u309f"
+                            or "\u30a0" <= c <= "\u30ff"
+                            or "\u4e00" <= c <= "\u9fff"
+                            for c in line
+                        ):
+                            if not any(
+                                word in line.lower()
+                                for word in [
+                                    "you are",
+                                    "translate",
+                                    "task",
+                                    "follow",
+                                    "rules",
+                                ]
+                            ):
+                                japanese_lines.append(line.strip())
+
+                    if japanese_lines:
+                        translated = "\n".join(japanese_lines)
+
                 return TranslationResult(
-                    text=translated, 
-                    source_lang=source_lang, 
-                    target_lang="en"
+                    text=translated, source_lang="en", target_lang="ja"
                 )
+        except urllib.error.URLError as e:
+            logger.error("Ollama connection failed: %s", e)
+            return TranslationResult(
+                text="{Translation Error}", source_lang="en", target_lang="ja"
+            )
         except Exception as e:
             logger.error("Ollama translation failed: %s", e)
-            return TranslationResult(text="[Local LLM Error]", source_lang=source_lang, target_lang="en")
+            return TranslationResult(
+                text="{Translation Error}", source_lang="en", target_lang="ja"
+            )
 
-    def _summarize_ollama(self, history: list[str], previous_summary: str | None = None) -> str | None:
-        url = "http://localhost:11434/api/generate"
-        
-        conversation = "\n".join(history)
-        prompt = (
-            "You are an AI assistant. Summarize the following meeting conversation concisely in 1-2 sentences. "
-            "Highlight the main topics and any key decisions or actions based ONLY on the Original Text provided.\n\n"
+    @staticmethod
+    def _is_japanese(char: str) -> bool:
+        return (
+            "\u3040" <= char <= "\u309f"
+            or "\u30a0" <= char <= "\u30ff"
+            or "\u4e00" <= char <= "\u9fff"
         )
-        if previous_summary:
-            prompt += f"[Previous Summary Context]: {previous_summary}\n\n"
-            
-        prompt += f"[Original Text]:\n{conversation}\n\nSummary:"
-
-        data = {
-            "model": self.model_id,
-            "prompt": prompt,
-            "stream": False,
-            "options": {
-                "temperature": 0.3,
-                "num_ctx": 4096,
-                "num_thread": 4
-            }
-        }
-
-        req = urllib.request.Request(url, data=json.dumps(data).encode("utf-8"), headers={"Content-Type": "application/json"})
-        try:
-            with urllib.request.urlopen(req, timeout=20) as response:
-                result = json.loads(response.read().decode("utf-8"))
-                return result.get("response", "").strip()
-        except urllib.error.URLError as e:
-            logger.error("Ollama summary error: %s", e)
-            return None

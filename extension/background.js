@@ -83,17 +83,11 @@ async function handleStartCapture(tabId, preCapturedStreamId) {
 
         await ensureOffscreen();
 
-        const prefs = await new Promise((res) => chrome.storage.local.get(["archSelect", "spokenLangSelect"], res));
-        const arch = prefs.archSelect || "vad_whisper_translate";
-        const spokenLang = prefs.spokenLangSelect || "auto";
-
         await chrome.runtime.sendMessage({
             type: "start-audio-capture",
             target: "offscreen",
             streamId: streamId,
             backendUrl: BACKEND_URL,
-            archSelect: arch,
-            spokenLangSelect: spokenLang
         });
 
         state.isCapturing = true;

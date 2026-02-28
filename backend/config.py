@@ -1,48 +1,30 @@
 import os
-from typing import Optional
 
+# Server
 HOST: str = os.getenv("TRANSLATION_HOST", "127.0.0.1")
 PORT: int = int(os.getenv("TRANSLATION_PORT", "8765"))
 
+# Audio
 SAMPLE_RATE: int = 16_000
 CHANNELS: int = 1
 BYTES_PER_SAMPLE: int = 4
 CHUNK_DURATION_SEC: float = 0.1
 
-VAD_ENERGY_THRESHOLD: float = 0.015
-VAD_SILENCE_DURATION_SEC: float = 0.8
-VAD_MIN_SPEECH_DURATION_SEC: float = 0.5
-VAD_MIN_BUFFER_SEC: float = 1.5
-VAD_MAX_BUFFER_SEC: float = 15.0
-VAD_PRE_SPEECH_SEC: float = 0.3
+# VAD (Voice Activity Detection)
+VAD_ENERGY_THRESHOLD: float = 0.010
+VAD_SILENCE_DURATION_SEC: float = 1.5
+VAD_MIN_SPEECH_DURATION_SEC: float = 0.3
+VAD_MIN_BUFFER_SEC: float = 2.0
+VAD_MAX_BUFFER_SEC: float = 20.0
+VAD_PRE_SPEECH_SEC: float = 0.5
 
-EFFICIENCY_MODE: bool = os.getenv("EFFICIENCY_MODE", "false").lower() == "true"
+# ASR (Whisper)
+WHISPER_MODEL: str = os.getenv("WHISPER_MODEL", "mlx-community/whisper-medium")
 
-DEFAULT_WHISPER_MODEL: str = "medium"
-WHISPER_MODEL_SIZE: str = os.getenv("WHISPER_MODEL", DEFAULT_WHISPER_MODEL)
-WHISPER_DEVICE: str = "cpu"
-WHISPER_COMPUTE_TYPE: str = "int8"
-WHISPER_BEAM_SIZE: int = 1
-WHISPER_BEST_OF: int = 1
-WHISPER_TEMPERATURE: float = 0.0
-WHISPER_VAD_FILTER: bool = False
-WHISPER_LANGUAGE: Optional[str] = None
-WHISPER_CPU_THREADS: int = 4
-
-os.environ["OMP_NUM_THREADS"] = str(WHISPER_CPU_THREADS)
-os.environ["MKL_NUM_THREADS"] = str(WHISPER_CPU_THREADS)
-os.environ["OPENBLAS_NUM_THREADS"] = str(WHISPER_CPU_THREADS)
-os.environ["VECLIB_MAXIMUM_THREADS"] = str(WHISPER_CPU_THREADS)
-os.environ["NUMEXPR_NUM_THREADS"] = str(WHISPER_CPU_THREADS)
-
-MAX_SEGMENTS_KEPT: int = 50
-
-WINDOW_INTERVAL_SEC: float = 5.0
-WINDOW_SIZE_SEC: float = 5.0
-WINDOW_OVERLAP_SEC: float = 0.5
-RING_BUFFER_SEC: float = 60.0
-
-TRANSLATION_ENGINE: str = os.getenv("TRANSLATION_ENGINE", "ollama")
+# Translation (Ollama)
+OLLAMA_URL: str = os.getenv("OLLAMA_URL", "http://localhost:11434/api/generate")
 OLLAMA_MODEL: str = os.getenv("OLLAMA_MODEL", "qwen2.5:1.5b")
 
+# Misc
+MAX_SEGMENTS_KEPT: int = 50
 LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")

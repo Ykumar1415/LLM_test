@@ -1,69 +1,62 @@
 # Meet Live Translator
 
-A 100% local, privacy-first, ultra-fast Google Meet translation extension. It captures tab audio from Google Meet or YouTube, streams it to a local Python backend via WebSockets, and uses `faster-whisper` and large language models (via Ollama) to translate speech into real-time subtitle bubbles.
+A 100% local, privacy-first, ultra-fast Google Meet translation extension. It captures tab audio from Google Meet or YouTube, streams it to a local Python backend via WebSockets, and uses MLX Whisper and Ollama to translate speech into real-time subtitle bubbles.
 
 ## Technical Architecture
 
-*   **Frontend:** Chrome Extension (Manifest V3) using an Offscreen Document and `AudioWorklet` to stream raw Float32 PCM audio.
-*   **Backend:** Python 3.10+ FastAPI server using asyncio and WebSockets.
-*   **ASR Engine:** `faster-whisper` (CTranslate2 backend).
-*   **Translation Engine:** Ollama running quantized SLMs (Small Language Models) locally.
+- **Frontend:** Chrome Extension (Manifest V3) using an Offscreen Document and `AudioWorklet` to stream raw Float32 PCM audio.
+- **Backend:** Python 3.10+ FastAPI server using asyncio and WebSockets.
+- **ASR Engine:** MLX Whisper (Apple MLX framework) - optimized for Apple Silicon.
+- **Translation Engine:** Ollama running quantized SLMs (Small Language Models) locally.
 
 ---
 
 ## Part 1: Backend Installation & Setup
 
-You must run the Python backend on the same machine (or same local network) as the browser running the extension.
+### Prerequisites
 
-### 1. Prerequisites
-*   **Python:** Install Python 3.10, 3.11, or 3.12. (3.13 may not have full pre-built dependency wheels yet).
-*   **Ollama:** Install [Ollama](https://ollama.com/).
+- **macOS:** Apple Silicon Mac (M1/M2/M3/M4)
+- **Python:** 3.10, 3.11, or 3.12
+- **ffmpeg:** Required for audio processing
+- **Ollama:** For translation
 
-### 2. Download LLM Models
-Start Ollama, then open your terminal and download a translation model. The extension defaults to `qwen2.5:1.5b` because of its excellent speed-to-accuracy ratio.
+### Quick Setup
 
 ```bash
+# Install ffmpeg
+brew install ffmpeg
+
+# Install Ollama and download translation model
+brew install ollama
+brew services start ollama
 ollama pull qwen2.5:1.5b
-```
 
-*(Optional: If you want to use the dual-tier translation architecture, also pull a summarizer model like `smollm:1.7b`)*.
-
-### 3. Install Python Dependencies
-Navigate to the `backend/` directory in this repository and install the requirements:
-
-```bash
+# Install Python dependencies
 cd backend
 pip install -r requirements.txt
+
+# Run the server
+python -m backend
 ```
 
-### 4. Running the Backend (Hardware Optimization Profiles)
+### Model Configuration
 
-How you run the backend depends entirely on your hardware. **Please read the section matching your computer.**
+The default Whisper model is `mlx-community/whisper-large-v3-turbo` for best accuracy. You can change it via environment variable:
 
-#### A. Standard PC (CPU Only)
-If you have a modern Intel or AMD processor without a dedicated NVIDIA GPU, `faster-whisper` is highly optimized using INT8 quantization and standard blas threads.
-
-To run:
 ```bash
-python server.py
+# Use a different model (examples)
+WHISPER_MODEL="mlx-community/whisper-small-mlx" python -m backend
+WHISPER_MODEL="mlx-community/whisper-large-v3-mlx" python -m backend
 ```
-*Note: By default, `config.py` limits Whisper to exactly 4 CPU threads (`WHISPER_CPU_THREADS = 4`) to prevent the translation from freezing your actual Google Meet tab in the browser.*
 
-#### B. Mac (Apple Silicon: M1 / M2 / M3)
-`faster-whisper` works on Mac, but it cannot currently utilize the Apple Neural Engine natively via CTranslate2. It runs purely on the CPU cores.
-Because M-series chips have highly efficient cores, you can usually increase the thread limit.
-1. Open `backend/config.py`.
-2. Change `WHISPER_CPU_THREADS = 4` to `WHISPER_CPU_THREADS = 8`.
-3. Run `python server.py`.
+Available models (from Hugging Face MLX Community):
 
-*(Advanced Note for Mac Users: If `faster-whisper` is too slow on your Mac, you must replace the `backend/asr.py` wrapper to use `whisper-cpp-python` instead, which ties directly into Apple's Metal framework. This requires C++ compilation on your machine).*
-
-#### C. PC with NVIDIA GPU (CUDA)
-If you have an NVIDIA GPU (RTX series), you can get massive speed improvements by forcing Whisper onto the GPU.
-1. Ensure you have the CUDA toolkit installed on your OS.
-2. Open `backend/config.py`.
-3. Change `WHISPER_DEVICE = "cpu"` to `WHISPER_DEVICE = "cuda"`.
-4. Run `python server.py`.
+- `mlx-community/whisper-tiny-mlx` - Fastest, lower accuracy
+- `mlx-community/whisper-base-mlx` - Fast, good accuracy
+- `mlx-community/whisper-small-mlx` - Balanced
+- `mlx-community/whisper-medium-mlx` - Good accuracy
+- `mlx-community/whisper-large-v3-mlx` - Best accuracy
+- `mlx-community/whisper-large-v3-turbo` - Best accuracy, optimized (default)
 
 ---
 
@@ -80,15 +73,15 @@ If you have an NVIDIA GPU (RTX series), you can get massive speed improvements b
 
 ## Usage Guide
 
-1. Make sure your Python backend is running (`python server.py`).
+1. Make sure your Python backend is running (`python -m backend`).
 2. Join a Google Meet call or open a YouTube video containing speech.
 3. Click the extension icon in your toolbar. This opens the translation sidebar.
-4. (Important) Click the extension icon again to ensure the browser prompts for audio capture permissions if it hasn't already.
+4. Click the extension icon again to ensure the browser prompts for audio capture permissions.
 5. In the sidebar, click the **[ Start ]** button.
-6. Speak or let the video play. The extension will stream the audio, and translated chat bubbles will appear in the sidebar in real time.
+6. Speak or let the video play. Translated chat bubbles will appear in real time.
 
 ### Troubleshooting
 
-*   **"WebSocket Error" or "Disconnected":** Make sure the Python server is running and listening on `ws://localhost:8765`.
-*   **It takes 2-3 seconds for text to appear:** This is by design. The system uses Voice Activity Detection (VAD) to wait for a 0.8-second pause in speech before sending the audio to the AI. This ensures the AI gets a complete sentence context rather than breaking translations halfway through a word.
-*   **The UI causes lag on my computer:** Check your CPU usage in Task Manager / Activity Monitor. If it's hitting 100%, lower `WHISPER_CPU_THREADS` in `config.py` to 2.
+- **"WebSocket Error" or "Disconnected":** Make sure the Python server is running on `ws://localhost:8765`.
+- **It takes 2-3 seconds for text to appear:** This is by design. The VAD waits for a 0.8-second pause in speech before processing.
+- **First run is slow:** The MLX model is downloaded and cached on first use (~1.6GB for large-v3-turbo). Subsequent runs are instant.

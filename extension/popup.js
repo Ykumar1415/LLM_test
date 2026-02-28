@@ -1,20 +1,21 @@
 const BACKEND_HEALTH_URL = "http://localhost:8765/health";
 
 const toggleBtn = document.getElementById("toggle-btn");
-const btnIcon = document.getElementById("btn-icon");
 const btnLabel = document.getElementById("btn-label");
 const errorBanner = document.getElementById("error-banner");
 const errorText = document.getElementById("error-text");
-const modelSelect = document.getElementById("modelSelect");
-const archSelect = document.getElementById("archSelect");
-const spokenLangSelect = document.getElementById("spokenLangSelect");
-const vadSlider = document.getElementById("vadSlider");
-const vadValue = document.getElementById("vadValue");
+const downloadBtn = document.getElementById("download-btn");
 
 const transcriptContainer = document.getElementById("transcript-container");
 const transcriptEmpty = document.getElementById("transcript-empty");
-const settingsToggleBtn = document.getElementById("settings-toggle-btn");
-const settingsBlock = document.getElementById("settings-block");
+
+// Fixed defaults
+const FIXED_SETTINGS = {
+    vadThreshold: 1.2,
+    archSelect: "vad_whisper_translate",
+    spokenLangSelect: "ja",
+    ollamaModel: "qwen2.5:1.5b"
+};
 
 let isCapturing = false;
 let backendReady = false;
@@ -22,8 +23,14 @@ let healthInterval = null;
 let sidebarWs = null;
 let latestSummary = "";
 let segmentCount = 0;
+let currentLang = "en"; // Track current active tab
+let englishMessages = new Map(); // Store English messages
+let japaneseMessages = new Map(); // Store Japanese messages
 
 document.addEventListener("DOMContentLoaded", async () => {
+    // Set fixed defaults in storage
+    chrome.storage.local.set(FIXED_SETTINGS);
+
     await checkBackendHealth();
 
     if (!backendReady) {
@@ -31,50 +38,10 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
 
     initSidebarWebSocket();
-    chrome.storage.local.get(["vadThreshold", "archSelect", "spokenLangSelect", "ollamaModel"], (res) => {
-        if (res.vadThreshold !== undefined) {
-            if (vadSlider) vadSlider.value = res.vadThreshold;
-            if (vadValue) vadValue.textContent = res.vadThreshold;
-        }
-        if (res.archSelect !== undefined) {
-            archSelect.value = res.archSelect;
-        }
-        if (res.spokenLangSelect !== undefined) {
-            spokenLangSelect.value = res.spokenLangSelect;
-        } else {
-            spokenLangSelect.value = "ja";
-            chrome.storage.local.set({ spokenLangSelect: "ja" });
-        }
-    });
-
-    await populateModels();
     await syncState();
     setupEventListeners();
+    setupTabSwitching();
 });
-
-async function populateModels() {
-    try {
-        const resp = await fetch("http://localhost:11434/api/tags", { signal: AbortSignal.timeout(2000) });
-        if (!resp.ok) throw new Error("Ollama not responding");
-        const data = await resp.json();
-
-        modelSelect.innerHTML = "";
-        data.models.forEach(m => {
-            const opt = document.createElement("option");
-            opt.value = m.name;
-            opt.textContent = m.name;
-            modelSelect.appendChild(opt);
-        });
-
-        chrome.storage.local.get(["ollamaModel"], (res) => {
-            if (res.ollamaModel) modelSelect.value = res.ollamaModel;
-            else modelSelect.value = "qwen2.5:1.5b";
-        });
-    } catch (e) {
-        modelSelect.innerHTML = '<option value="qwen2.5:1.5b">qwen2.5:1.5b</option>';
-        modelSelect.value = "qwen2.5:1.5b";
-    }
-}
 
 async function checkBackendHealth() {
     try {
@@ -109,13 +76,6 @@ async function syncState() {
 }
 
 function setupEventListeners() {
-    archSelect.addEventListener("change", (e) => chrome.storage.local.set({ archSelect: e.target.value }));
-    spokenLangSelect.addEventListener("change", (e) => chrome.storage.local.set({ spokenLangSelect: e.target.value }));
-    modelSelect.addEventListener("change", (e) => chrome.storage.local.set({ ollamaModel: e.target.value }));
-
-    vadSlider.addEventListener("input", (e) => vadValue.textContent = e.target.value);
-    vadSlider.addEventListener("change", (e) => chrome.storage.local.set({ vadThreshold: e.target.value }));
-
     toggleBtn.addEventListener("click", async () => {
         toggleBtn.disabled = true;
         hideError();
@@ -129,8 +89,27 @@ function setupEventListeners() {
         toggleBtn.disabled = false;
     });
 
-    settingsToggleBtn.addEventListener("click", () => {
-        settingsBlock.style.display = settingsBlock.style.display === "none" ? "flex" : "none";
+    downloadBtn.addEventListener("click", () => {
+        downloadConversation();
+    });
+}
+
+function setupTabSwitching() {
+    const tabEn = document.getElementById("tab-en");
+    const tabJa = document.getElementById("tab-ja");
+
+    tabEn.addEventListener("click", () => {
+        currentLang = "en";
+        tabEn.classList.add("active");
+        tabJa.classList.remove("active");
+        refreshTranscriptDisplay();
+    });
+
+    tabJa.addEventListener("click", () => {
+        currentLang = "ja";
+        tabJa.classList.add("active");
+        tabEn.classList.remove("active");
+        refreshTranscriptDisplay();
     });
 }
 
@@ -191,14 +170,20 @@ async function stopCapture() {
 }
 
 function updateUI() {
+    const playIcon = toggleBtn.querySelector(".play-icon");
+    const stopIcon = toggleBtn.querySelector(".stop-icon");
+    const btnLabel = toggleBtn.querySelector(".btn-label");
+
     if (isCapturing) {
-        btnIcon.textContent = "⏹";
-        btnLabel.textContent = "Stop";
+        if (playIcon) playIcon.style.display = "none";
+        if (stopIcon) stopIcon.style.display = "block";
+        if (btnLabel) btnLabel.textContent = "Stop";
         toggleBtn.classList.add("active");
         setCaptureStatus("active", "Live");
     } else {
-        btnIcon.textContent = "▶";
-        btnLabel.textContent = "Start";
+        if (playIcon) playIcon.style.display = "block";
+        if (stopIcon) stopIcon.style.display = "none";
+        if (btnLabel) btnLabel.textContent = "Start";
         toggleBtn.classList.remove("active");
         setCaptureStatus("idle", "Idle");
     }
@@ -209,7 +194,8 @@ function setBackendStatus(state, text) {
     if (!badge) return;
     const dot = badge.querySelector(".status-dot");
     if (dot) dot.className = `status-dot ${state}`;
-    badge.title = `Backend Status: ${text}`;
+    badge.title = `Backend: ${text}`;
+    badge.className = `status-badge ${state}`;
 }
 
 function setCaptureStatus(state, text) {
@@ -217,7 +203,8 @@ function setCaptureStatus(state, text) {
     if (!badge) return;
     const dot = badge.querySelector(".status-dot");
     if (dot) dot.className = `status-dot ${state}`;
-    badge.title = `Audio Capture: ${text}`;
+    badge.title = `Audio: ${text}`;
+    badge.className = `status-badge ${state}`;
 }
 
 function showError(msg) {
@@ -239,10 +226,31 @@ function initSidebarWebSocket() {
         } catch (e) { return; }
 
         if (msg.type === "segment") {
+            // English translation from Whisper
             const displayText = msg.translated && msg.translated !== "..." ? msg.translated : msg.original;
-            const lang = msg.source_lang || "ja";
-            appendOrUpdateTranscript(msg.id, displayText, msg.is_final === true, lang);
+            englishMessages.set(msg.id, displayText);
+
+            // Only set Japanese placeholder for FINAL segments (when user stops speaking)
+            // Interim segments don't get translated to reduce Ollama load
+            if (msg.is_final === true && !japaneseMessages.has(msg.id)) {
+                japaneseMessages.set(msg.id, "...");
+            }
+
+            // Update display for both tabs
+            if (currentLang === "en") {
+                appendOrUpdateTranscript(msg.id, displayText, msg.is_final === true, "en");
+            } else if (currentLang === "ja" && msg.is_final === true) {
+                // Only show placeholder in Japanese tab for final segments
+                appendOrUpdateTranscript(msg.id, "...", false, "ja");
+            }
+        } else if (msg.type === "segment_japanese") {
+            // Japanese translation from Ollama - update the actual translation
+            japaneseMessages.set(msg.id, msg.translated);
+            if (currentLang === "ja") {
+                appendOrUpdateTranscript(msg.id, msg.translated, true, "ja");
+            }
         } else if (msg.type === "translation_update") {
+            // Legacy support for old translation updates
             appendOrUpdateTranscript(msg.id, msg.translated || msg.text, true, "translated");
         } else if (msg.type === "summary") {
             latestSummary = msg.text;
@@ -253,6 +261,23 @@ function initSidebarWebSocket() {
     sidebarWs.onclose = () => {
         setTimeout(initSidebarWebSocket, 3000);
     };
+}
+
+function refreshTranscriptDisplay() {
+    // Clear the transcript container
+    transcriptContainer.innerHTML = '<div class="transcript-empty" id="transcript-empty" style="display: none;">[ Waiting for Audio / Click Start ]</div>';
+
+    // Select the appropriate message map based on current language
+    const messages = currentLang === "en" ? englishMessages : japaneseMessages;
+
+    // Re-render all messages for the current language
+    if (messages.size === 0) {
+        document.getElementById("transcript-empty").style.display = "block";
+    } else {
+        messages.forEach((text, id) => {
+            appendOrUpdateTranscript(id, text, true, currentLang);
+        });
+    }
 }
 
 function appendOrUpdateTranscript(id, text, isFinal, lang) {
@@ -288,6 +313,16 @@ function appendOrUpdateTranscript(id, text, isFinal, lang) {
     } else {
         const textEl = bubble.querySelector(".msg-text");
         if (textEl) textEl.textContent = text;
+
+        // Remove loading class when actual translation arrives
+        if (text !== "...") {
+            bubble.classList.remove("loading");
+        }
+    }
+
+    // Add loading class for placeholder text
+    if (text === "...") {
+        bubble.classList.add("loading");
     }
 
     if (isFinal) {
@@ -314,4 +349,191 @@ function addInlineSummary(summaryText) {
 
     transcriptContainer.appendChild(btn);
     transcriptContainer.scrollTop = transcriptContainer.scrollHeight;
+}
+
+function downloadConversation() {
+    if (englishMessages.size === 0 && japaneseMessages.size === 0) {
+        showError("No conversation to download yet.");
+        setTimeout(hideError, 3000);
+        return;
+    }
+
+    const now = new Date();
+    const dateStr = now.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+    const timeStr = now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+
+    // Build English conversation
+    let englishContent = '';
+    englishMessages.forEach((text, id) => {
+        const timestamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        englishContent += `        <div class="message">
+            <div class="message-header">
+                <span class="speaker-label">[EN] Speaker</span>
+                <span class="timestamp">${timestamp}</span>
+            </div>
+            <div class="message-text">${escapeHtml(text)}</div>
+        </div>\n`;
+    });
+
+    // Build Japanese conversation
+    let japaneseContent = '';
+    japaneseMessages.forEach((text, id) => {
+        const timestamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        japaneseContent += `        <div class="message">
+            <div class="message-header">
+                <span class="speaker-label">[JA] Speaker</span>
+                <span class="timestamp">${timestamp}</span>
+            </div>
+            <div class="message-text">${escapeHtml(text)}</div>
+        </div>\n`;
+    });
+
+    const htmlContent = `<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Conversation Transcript - ${dateStr}</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: #faf8f3;
+            color: #2a2822;
+            line-height: 1.6;
+            padding: 40px 20px;
+        }
+        .container {
+            max-width: 900px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.1);
+            overflow: hidden;
+        }
+        .header {
+            background: #5a6f4a;
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+        .header h1 {
+            font-size: 28px;
+            font-weight: 700;
+            margin-bottom: 8px;
+        }
+        .header .date {
+            font-size: 14px;
+            opacity: 0.9;
+        }
+        .section {
+            padding: 30px;
+            border-bottom: 2px solid #e8dfc7;
+        }
+        .section:last-child {
+            border-bottom: none;
+        }
+        .section-title {
+            font-size: 20px;
+            font-weight: 700;
+            color: #4a5d3e;
+            margin-bottom: 20px;
+            padding-bottom: 10px;
+            border-bottom: 3px solid #c09858;
+            display: inline-block;
+        }
+        .message {
+            background: #fdfbf5;
+            border: 1px solid #e8dfc7;
+            border-left: 4px solid #78a55a;
+            border-radius: 8px;
+            padding: 16px;
+            margin-bottom: 16px;
+        }
+        .message:last-child {
+            margin-bottom: 0;
+        }
+        .message-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 8px;
+        }
+        .speaker-label {
+            font-weight: 600;
+            font-size: 12px;
+            color: #5a6f4a;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        .timestamp {
+            font-size: 11px;
+            color: #9ca38f;
+        }
+        .message-text {
+            font-size: 15px;
+            color: #2a2822;
+            line-height: 1.7;
+        }
+        .footer {
+            text-align: center;
+            padding: 20px;
+            color: #9ca38f;
+            font-size: 12px;
+        }
+        @media print {
+            body {
+                padding: 0;
+                background: white;
+            }
+            .container {
+                box-shadow: none;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>📝 Conversation Transcript</h1>
+            <div class="date">${dateStr} at ${timeStr}</div>
+        </div>
+        
+        <div class="section">
+            <div class="section-title">English Conversation</div>
+${englishContent || '            <div class="message"><div class="message-text" style="color: #9ca38f; font-style: italic;">No English messages recorded.</div></div>'}
+        </div>
+        
+        <div class="section">
+            <div class="section-title">Japanese Conversation (日本語)</div>
+${japaneseContent || '            <div class="message"><div class="message-text" style="color: #9ca38f; font-style: italic;">No Japanese messages recorded.</div></div>'}
+        </div>
+        
+        <div class="footer">
+            Generated by Meet Live Translator
+        </div>
+    </div>
+</body>
+</html>`;
+
+    // Create and download the file
+    const blob = new Blob([htmlContent], { type: 'text/html' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `conversation-transcript-${now.getFullYear()}-${(now.getMonth() + 1).toString().padStart(2, '0')}-${now.getDate().toString().padStart(2, '0')}.html`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+}
+
+function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
 }

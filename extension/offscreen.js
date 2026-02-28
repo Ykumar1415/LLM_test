@@ -4,8 +4,6 @@ let workletNode = null;
 let ws = null;
 let reconnectTimer = null;
 let backendUrl = "ws://localhost:8765";
-let archSelect = "vad_whisper_translate";
-let spokenLangSelect = "auto";
 
 const TARGET_SAMPLE_RATE = 16000;
 
@@ -30,8 +28,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 async function startCapture(msg) {
     const streamId = msg.streamId;
     backendUrl = msg.backendUrl || "ws://localhost:8765";
-    archSelect = msg.archSelect || "vad_whisper_translate";
-    spokenLangSelect = msg.spokenLangSelect || "auto";
 
     mediaStream = await navigator.mediaDevices.getUserMedia({
         audio: {
@@ -93,7 +89,7 @@ function stopCapture() {
 function connectWebSocket() {
     if (ws && ws.readyState === WebSocket.OPEN) return;
 
-    const url = `${backendUrl}/ws/audio?arch=${archSelect}&lang=${spokenLangSelect}`;
+    const url = `${backendUrl}/ws/audio?lang=auto`;
     ws = new WebSocket(url);
     ws.binaryType = "arraybuffer";
 
@@ -127,22 +123,3 @@ function sendAudioChunk(pcmFloat32) {
     if (ws.bufferedAmount > 65536) return;
     ws.send(pcmFloat32.buffer);
 }
-
-chrome.storage.onChanged.addListener((changes, namespace) => {
-    if (namespace === "local") {
-        let needsReconnect = false;
-
-        if (changes.archSelect) {
-            archSelect = changes.archSelect.newValue;
-            needsReconnect = true;
-        }
-        if (changes.spokenLangSelect) {
-            spokenLangSelect = changes.spokenLangSelect.newValue;
-            needsReconnect = true;
-        }
-
-        if (needsReconnect && ws && ws.readyState === WebSocket.OPEN) {
-            ws.close(1000, "Settings Reconnect");
-        }
-    }
-});

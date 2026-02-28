@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import threading
 from typing import NamedTuple
 
@@ -19,38 +20,26 @@ class TranscriptionResult(NamedTuple):
 
 
 class ASREngine:
-    def __init__(
-        self,
-        model_size: str = config.WHISPER_MODEL_SIZE,
-        device: str = config.WHISPER_DEVICE,
-        compute_type: str = config.WHISPER_COMPUTE_TYPE,
-    ) -> None:
+    def __init__(self, model_path: str = config.WHISPER_MODEL) -> None:
         self._lock = threading.Lock()
-        self._model = None
-        self._model_size = model_size
-        self._device = device
-        self._compute_type = compute_type
+        self._model_path = model_path
+        self._loaded = False
 
     def load(self) -> None:
-        from faster_whisper import WhisperModel
+        import mlx_whisper
 
-        logger.info(
-            "Loading Whisper model '%s' (device=%s, compute=%s)",
-            self._model_size,
-            self._device,
-            self._compute_type,
+        self._mlx_whisper = mlx_whisper
+        logger.info("Loading MLX Whisper model: %s", self._model_path)
+        result = self._mlx_whisper.transcribe(
+            np.zeros(16000, dtype=np.float32),
+            path_or_hf_repo=self._model_path,
         )
-        self._model = WhisperModel(
-            self._model_size,
-            device=self._device,
-            compute_type=self._compute_type,
-            cpu_threads=config.WHISPER_CPU_THREADS,
-        )
-        logger.info("Whisper model loaded successfully.")
+        self._loaded = True
+        logger.info("MLX Whisper model loaded successfully")
 
     @property
     def is_loaded(self) -> bool:
-        return self._model is not None
+        return self._loaded
 
     def transcribe(
         self,
@@ -59,8 +48,8 @@ class ASREngine:
         task: str = "transcribe",
         language: str | None = None,
     ) -> TranscriptionResult | None:
-        if self._model is None:
-            raise RuntimeError("ASR model not loaded. Call .load() first.")
+        if not self._loaded:
+            raise RuntimeError("ASR model not loaded")
 
         if len(audio) == 0:
             return None
@@ -69,82 +58,60 @@ class ASREngine:
 
         with self._lock:
             try:
-                segments_gen, info = self._model.transcribe(
-                    audio,
-                    language=language if language and language != "auto" else config.WHISPER_LANGUAGE,
-                    beam_size=config.WHISPER_BEAM_SIZE,
-                    best_of=config.WHISPER_BEST_OF,
-                    temperature=config.WHISPER_TEMPERATURE,
-                    vad_filter=config.WHISPER_VAD_FILTER,
-                    task=task,
-                    vad_parameters=dict(
-                        min_silence_duration_ms=300,
-                        speech_pad_ms=100,
-                    ),
-                    word_timestamps=False,
-                    condition_on_previous_text=False,
-                    initial_prompt=initial_prompt,
-                    no_speech_threshold=0.4,
-                    log_prob_threshold=-0.5,
-                    repetition_penalty=1.2,
-                )
+                transcribe_opts = {
+                    "path_or_hf_repo": self._model_path,
+                    "task": task,
+                    "fp16": True,
+                    "verbose": False,
+                }
+                if language and language != "auto":
+                    transcribe_opts["language"] = language
+                if initial_prompt:
+                    transcribe_opts["initial_prompt"] = initial_prompt
 
-                texts: list[str] = []
-                for seg in segments_gen:
-                    text = seg.text.strip()
-                    if text:
-                        texts.append(text)
+                result = self._mlx_whisper.transcribe(audio, **transcribe_opts)
 
-                full_text = " ".join(texts).strip()
-
-                full_text = self._clean_whisper_output(full_text)
+                full_text = result.get("text", "").strip()
+                full_text = self._clean_output(full_text)
 
                 if not full_text:
                     return None
 
-                result = TranscriptionResult(
+                detected_lang = result.get("language", "en")
+
+                output = TranscriptionResult(
                     text=full_text,
-                    language=info.language,
-                    language_probability=info.language_probability,
+                    language=detected_lang,
+                    language_probability=1.0,
                     duration_sec=duration_sec,
                 )
                 logger.info(
-                    "ASR [%s %.0f%%]: \"%s\" (%.1fs audio)",
-                    result.language,
-                    result.language_probability * 100,
-                    result.text[:80],
-                    result.duration_sec,
+                    'ASR [%s]: "%s" (%.1fs)',
+                    output.language,
+                    output.text[:80],
+                    output.duration_sec,
                 )
-                return result
+                return output
 
             except Exception:
-                logger.exception("ASR transcription failed")
+                logger.exception("Transcription failed")
                 return None
 
     @staticmethod
-    def _clean_whisper_output(text: str) -> str:
-        import re
-
+    def _clean_output(text: str) -> str:
         if not text:
             return text
-
-        text = re.sub(r'(\b\w{1,15}[.!?]?\s*)\1{2,}', r'\1', text)
-        text = re.sub(r'([\u3000-\u9fff]{1,5}[。、]?\s*)\1{2,}', r'\1', text)
-
-        text = re.sub(r'>>', '', text)
-        text = re.sub(r'<<', '', text)
-        text = re.sub(r'\[.*?\]', '', text)
-        text = re.sub(r'\(.*?\)', '', text)
-
-        noise_patterns = [
-            r'(?i)thanks?\s+for\s+watching\.?',
-            r'(?i)please\s+subscribe\.?',
-            r'(?i)like\s+and\s+subscribe\.?',
-            r'ご視聴ありがとうございました。?',
-            r'チャンネル登録お願いします。?',
+        text = re.sub(r"(\b\w{1,15}[.!?]?\s*)\1{2,}", r"\1", text)
+        text = re.sub(r"([\u3000-\u9fff]{1,5}[。、]?\s*)\1{2,}", r"\1", text)
+        text = re.sub(r">>|<<", "", text)
+        text = re.sub(r"\[.*?\]|\(.*?\)", "", text)
+        noise = [
+            r"(?i)thanks?\s+for\s+watching\.?",
+            r"(?i)please\s+subscribe\.?",
+            r"(?i)like\s+and\s+subscribe\.?",
+            r"ご視聴ありがとうございました。?",
+            r"チャンネル登録お願いします。?",
         ]
-        for pattern in noise_patterns:
-            text = re.sub(pattern, '', text)
-
-        text = re.sub(r'\s+', ' ', text).strip()
-        return text
+        for pattern in noise:
+            text = re.sub(pattern, "", text)
+        return re.sub(r"\s+", " ", text).strip()

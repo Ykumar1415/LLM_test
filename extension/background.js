@@ -92,6 +92,16 @@ async function handleStartCapture(tabId, preCapturedStreamId) {
 
         state.isCapturing = true;
         state.meetTabId = tabId;
+
+        try {
+            await chrome.tabs.sendMessage(tabId, {
+                type: "show-overlay",
+                backendUrl: BACKEND_URL
+            });
+        } catch (e) {
+            console.warn("Could not notify content script:", e);
+        }
+
         return { ok: true };
     } catch (err) {
         await closeOffscreen();
@@ -103,6 +113,12 @@ async function handleStartCapture(tabId, preCapturedStreamId) {
 
 async function handleStopCapture() {
     try {
+        if (state.meetTabId) {
+            try {
+                await chrome.tabs.sendMessage(state.meetTabId, { type: "hide-overlay" });
+            } catch (e) { }
+        }
+
         try {
             await chrome.runtime.sendMessage({ type: "stop-audio-capture", target: "offscreen" });
         } catch (e) { }

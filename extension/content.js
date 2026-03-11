@@ -1,20 +1,8 @@
-/**
- * Meet Live Translator — Content Script
- *
- * Injected into Google Meet pages. Creates a Shadow DOM overlay
- * that displays live transcription and translation segments.
- * Connects to the backend text WebSocket for real-time updates.
- */
-
 (() => {
   "use strict";
 
-  // ── Prevent double-injection ─────────────────────
-
   if (window.__meetTranslatorInjected) return;
   window.__meetTranslatorInjected = true;
-
-  // ── Constants ────────────────────────────────────
 
   const MAX_SEGMENTS = 15;
   const BACKEND_WS_URL = "ws://localhost:8765/ws/text";
@@ -23,8 +11,6 @@
     ja: "🇯🇵",
   };
 
-  // ── State ────────────────────────────────────────
-
   let ws = null;
   let reconnectTimer = null;
   let pingIntervalId = null;
@@ -32,8 +18,9 @@
   let isVisible = false;
   let isDragging = false;
   let dragOffset = { x: 0, y: 0 };
-
-  // ── Shadow DOM Setup ─────────────────────────────
+  let captionObserver = null;
+  let captionRetryInterval = null;
+  let currentSpeaker = "Speaker";
 
   const host = document.createElement("div");
   host.id = "meet-translator-host";
@@ -42,12 +29,10 @@
 
   const shadow = host.attachShadow({ mode: "closed" });
 
-  // Inject styles into shadow DOM
   const styleEl = document.createElement("style");
   styleEl.textContent = getOverlayCSS();
   shadow.appendChild(styleEl);
 
-  // Build overlay structure
   const overlay = document.createElement("div");
   overlay.className = "translator-overlay";
   overlay.innerHTML = `
@@ -70,16 +55,12 @@
   `;
   shadow.appendChild(overlay);
 
-  // ── References ───────────────────────────────────
-
   const segmentsContainer = shadow.getElementById("segments-container");
   const statusDot = shadow.getElementById("status-dot");
   const emptyState = shadow.getElementById("empty-state");
   const btnMinimize = shadow.getElementById("btn-minimize");
   const btnClose = shadow.getElementById("btn-close");
   const dragHandle = shadow.getElementById("drag-handle");
-
-  // ── Event handlers ───────────────────────────────
 
   btnMinimize.addEventListener("click", () => {
     const body = shadow.querySelector(".translator-body");
@@ -91,7 +72,6 @@
     hideOverlay();
   });
 
-  // Dragging
   dragHandle.addEventListener("mousedown", (e) => {
     if (e.target.tagName === "BUTTON") return;
     isDragging = true;
@@ -118,8 +98,6 @@
     }
   });
 
-  // ── Message handler from background ──────────────
-
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     switch (msg.type) {
       case "show-overlay":
@@ -134,23 +112,109 @@
     }
   });
 
-  // ── Show / Hide ──────────────────────────────────
-
   function showOverlay(backendUrl) {
-    overlay.classList.add("visible");
     isVisible = true;
     currentBackendUrl = backendUrl;
     connectWebSocket(backendUrl);
+    startCaptionObserver();
+    hideMeetCaptions();
   }
 
   function hideOverlay() {
-    overlay.classList.remove("visible");
     isVisible = false;
     disconnectWebSocket();
-    clearSegments();
+    stopCaptionObserver();
+    showMeetCaptions();
   }
 
-  // ── WebSocket connection ─────────────────────────
+  let captionHideStyle = null;
+
+  function hideMeetCaptions() {
+    if (captionHideStyle) return;
+    captionHideStyle = document.createElement("style");
+    captionHideStyle.textContent = `
+      div[role="region"][tabindex="0"],
+      div.a4cQT {
+        position: fixed !important;
+        left: -9999px !important;
+        opacity: 0 !important;
+        pointer-events: none !important;
+      }
+    `;
+    document.head.appendChild(captionHideStyle);
+  }
+
+  function showMeetCaptions() {
+    if (captionHideStyle) {
+      captionHideStyle.remove();
+      captionHideStyle = null;
+    }
+  }
+
+  function extractSpeakerFromCaption(node) {
+    let el = node instanceof Element ? node : node.parentElement;
+    while (el) {
+      const prev = el.previousElementSibling;
+      if (prev) {
+        const name = prev.textContent?.trim();
+        if (name && name.length < 50 && name.length > 0) return name;
+      }
+      el = el.parentElement;
+    }
+    return null;
+  }
+
+  function startCaptionObserver() {
+    stopCaptionObserver();
+
+    const tryObserve = () => {
+      const container =
+        document.querySelector('div[role="region"][tabindex="0"]') ||
+        document.querySelector('div.a4cQT') ||
+        document.querySelector('[jscontroller] div[class*="iOzk7"]');
+      if (!container) return false;
+
+      captionObserver = new MutationObserver((mutations) => {
+        for (const mutation of mutations) {
+          let name = null;
+          if (mutation.type === "characterData") {
+            name = extractSpeakerFromCaption(mutation.target);
+          } else if (mutation.type === "childList" && mutation.addedNodes.length > 0) {
+            for (const added of mutation.addedNodes) {
+              name = extractSpeakerFromCaption(added);
+              if (name) break;
+            }
+          }
+          if (name && name !== currentSpeaker) {
+            currentSpeaker = name;
+            console.log("[Translator] Speaker detected:", name);
+            if (ws && ws.readyState === WebSocket.OPEN) {
+              ws.send(JSON.stringify({ type: "speaker_update", speaker: name }));
+            }
+          }
+        }
+      });
+      captionObserver.observe(container, {
+        childList: true, subtree: true, characterData: true
+      });
+      console.log("[Translator] Caption observer started — speaker detection active.");
+      return true;
+    };
+
+    if (!tryObserve()) {
+      captionRetryInterval = setInterval(() => {
+        if (tryObserve()) {
+          clearInterval(captionRetryInterval);
+          captionRetryInterval = null;
+        }
+      }, 3000);
+    }
+  }
+
+  function stopCaptionObserver() {
+    if (captionObserver) { captionObserver.disconnect(); captionObserver = null; }
+    if (captionRetryInterval) { clearInterval(captionRetryInterval); captionRetryInterval = null; }
+  }
 
   function connectWebSocket(backendUrl) {
     if (ws && ws.readyState === WebSocket.OPEN) return;
@@ -189,7 +253,6 @@
       setStatus("error");
     };
 
-    // Keep-alive pings (clear any previous first)
     clearPingInterval();
     pingIntervalId = setInterval(() => {
       if (ws && ws.readyState === WebSocket.OPEN) {
@@ -225,14 +288,10 @@
     }, 3000);
   }
 
-  // ── Handle incoming messages ─────────────────────
-
   function handleWSMessage(data) {
     switch (data.type) {
       case "status":
-        if (data.state === "endpoint") {
-          // Status endpoint is no longer heavily relied upon since segments manage their own lifecycles
-        } else {
+        if (data.state !== "endpoint") {
           setStatus(data.state === "ready" ? "connected" : "processing");
         }
         break;
@@ -254,9 +313,6 @@
     }
   }
 
-
-
-  // ── UI updates ───────────────────────────────────
 
   function setStatus(state) {
     statusDot.className = `translator-status ${state}`;
@@ -297,7 +353,8 @@
     const srcFlag = LANG_FLAGS[data.source_lang] || "🌍";
     const tgtFlag = LANG_FLAGS[data.target_lang] || "🌍";
 
-    el.querySelector(".seg-direction").textContent = `${srcFlag}→${tgtFlag}`;
+    const speaker = data.speaker || currentSpeaker || "Speaker";
+    el.querySelector(".seg-direction").textContent = `${srcFlag} ${speaker}`;
     el.querySelector(".seg-original").textContent = data.original;
 
     const translatedEl = el.querySelector(".seg-translated");
@@ -380,8 +437,6 @@
     if (emptyState) emptyState.style.display = "";
   }
 
-  // ── Overlay CSS (injected into Shadow DOM) ───────
-
   function getOverlayCSS() {
     return `
       @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap');
@@ -426,8 +481,6 @@
         transform: translateY(0) scale(1);
         pointer-events: all;
       }
-
-      /* ── Header ─────────────────── */
 
       .translator-header {
         display: flex;
@@ -485,8 +538,6 @@
         border-color: rgba(255, 255, 255, 0.15);
       }
 
-      /* ── Status dot ─────────────── */
-
       .translator-status {
         width: 8px;
         height: 8px;
@@ -519,8 +570,6 @@
         0%, 100% { opacity: 1; }
         50% { opacity: 0.5; }
       }
-
-      /* ── Body / Segments ────────── */
 
       .translator-body {
         flex: 1;
@@ -559,8 +608,6 @@
         font-size: 13px;
         font-style: italic;
       }
-
-      /* ── Segment card ───────────── */
 
       .translator-segment {
         background: rgba(255, 255, 255, 0.03);

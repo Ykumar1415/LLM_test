@@ -31,8 +31,6 @@ translator = TranslationEngine()
 
 
 class SessionContext:
-    """Maintains conversation context for better transcription quality."""
-
     def __init__(self):
         self.transcript_history: collections.deque = collections.deque(maxlen=5)
 
@@ -105,11 +103,11 @@ class ConnectionManager:
 
 
 manager = ConnectionManager()
+_current_speaker: str = "Speaker"
 
 
 @app.websocket("/ws/audio")
 async def ws_audio(ws: WebSocket, lang: str = "auto"):
-    """Handle incoming audio stream using VAD-based transcription."""
     await ws.accept()
     client_id = str(uuid.uuid4())[:8]
     logger.info("Audio client connected: %s (lang=%s)", client_id, lang)
@@ -163,6 +161,7 @@ async def ws_audio(ws: WebSocket, lang: str = "auto"):
                     "target_lang": "en",
                     "cached": False,
                     "is_final": is_final,
+                    "speaker": _current_speaker,
                 }
             )
 
@@ -264,6 +263,9 @@ async def ws_text(ws: WebSocket):
                 data = json.loads(msg)
                 if data.get("type") == "ping":
                     await ws.send_json({"type": "pong"})
+                elif data.get("type") == "speaker_update":
+                    global _current_speaker
+                    _current_speaker = data.get("speaker", "Speaker")
             except json.JSONDecodeError:
                 pass
     except WebSocketDisconnect:

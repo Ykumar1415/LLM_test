@@ -9,7 +9,6 @@ const downloadBtn = document.getElementById("download-btn");
 const transcriptContainer = document.getElementById("transcript-container");
 const transcriptEmpty = document.getElementById("transcript-empty");
 
-// Fixed defaults
 const FIXED_SETTINGS = {
     vadThreshold: 1.2,
     archSelect: "vad_whisper_translate",
@@ -23,12 +22,12 @@ let healthInterval = null;
 let sidebarWs = null;
 let latestSummary = "";
 let segmentCount = 0;
-let currentLang = "en"; // Track current active tab
-let englishMessages = new Map(); // Store English messages
-let japaneseMessages = new Map(); // Store Japanese messages
+let currentLang = "en";
+let englishMessages = new Map();
+let japaneseMessages = new Map();
+let speakerNames = new Map();
 
 document.addEventListener("DOMContentLoaded", async () => {
-    // Set fixed defaults in storage
     chrome.storage.local.set(FIXED_SETTINGS);
 
     await checkBackendHealth();
@@ -226,31 +225,25 @@ function initSidebarWebSocket() {
         } catch (e) { return; }
 
         if (msg.type === "segment") {
-            // English translation from Whisper
             const displayText = msg.translated && msg.translated !== "..." ? msg.translated : msg.original;
             englishMessages.set(msg.id, displayText);
+            if (msg.speaker) speakerNames.set(msg.id, msg.speaker);
 
-            // Only set Japanese placeholder for FINAL segments (when user stops speaking)
-            // Interim segments don't get translated to reduce Ollama load
             if (msg.is_final === true && !japaneseMessages.has(msg.id)) {
                 japaneseMessages.set(msg.id, "...");
             }
 
-            // Update display for both tabs
             if (currentLang === "en") {
                 appendOrUpdateTranscript(msg.id, displayText, msg.is_final === true, "en");
             } else if (currentLang === "ja" && msg.is_final === true) {
-                // Only show placeholder in Japanese tab for final segments
                 appendOrUpdateTranscript(msg.id, "...", false, "ja");
             }
         } else if (msg.type === "segment_japanese") {
-            // Japanese translation from Ollama - update the actual translation
             japaneseMessages.set(msg.id, msg.translated);
             if (currentLang === "ja") {
                 appendOrUpdateTranscript(msg.id, msg.translated, true, "ja");
             }
         } else if (msg.type === "translation_update") {
-            // Legacy support for old translation updates
             appendOrUpdateTranscript(msg.id, msg.translated || msg.text, true, "translated");
         } else if (msg.type === "summary") {
             latestSummary = msg.text;
@@ -264,13 +257,9 @@ function initSidebarWebSocket() {
 }
 
 function refreshTranscriptDisplay() {
-    // Clear the transcript container
     transcriptContainer.innerHTML = '<div class="transcript-empty" id="transcript-empty" style="display: none;">[ Waiting for Audio / Click Start ]</div>';
-
-    // Select the appropriate message map based on current language
     const messages = currentLang === "en" ? englishMessages : japaneseMessages;
 
-    // Re-render all messages for the current language
     if (messages.size === 0) {
         document.getElementById("transcript-empty").style.display = "block";
     } else {
@@ -293,10 +282,9 @@ function appendOrUpdateTranscript(id, text, isFinal, lang) {
 
         const speaker = document.createElement("div");
         speaker.className = "msg-speaker";
-
-        // Replaced emoji icons with standard clean text abbreviations
         const langTag = lang === "ja" ? "[JA]" : lang === "en" ? "[EN]" : "[T]";
-        speaker.textContent = `${langTag} Speaker`;
+        const speakerName = speakerNames.get(id) || "Speaker";
+        speaker.textContent = `${langTag} ${speakerName}`;
         bubble.appendChild(speaker);
 
         const textEl = document.createElement("div");
@@ -314,13 +302,11 @@ function appendOrUpdateTranscript(id, text, isFinal, lang) {
         const textEl = bubble.querySelector(".msg-text");
         if (textEl) textEl.textContent = text;
 
-        // Remove loading class when actual translation arrives
         if (text !== "...") {
             bubble.classList.remove("loading");
         }
     }
 
-    // Add loading class for placeholder text
     if (text === "...") {
         bubble.classList.add("loading");
     }
@@ -362,26 +348,26 @@ function downloadConversation() {
     const dateStr = now.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
     const timeStr = now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
 
-    // Build English conversation
     let englishContent = '';
     englishMessages.forEach((text, id) => {
         const timestamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        const name = speakerNames.get(id) || 'Speaker';
         englishContent += `        <div class="message">
             <div class="message-header">
-                <span class="speaker-label">[EN] Speaker</span>
+                <span class="speaker-label">[EN] ${escapeHtml(name)}</span>
                 <span class="timestamp">${timestamp}</span>
             </div>
             <div class="message-text">${escapeHtml(text)}</div>
         </div>\n`;
     });
 
-    // Build Japanese conversation
     let japaneseContent = '';
     japaneseMessages.forEach((text, id) => {
         const timestamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        const name = speakerNames.get(id) || 'Speaker';
         japaneseContent += `        <div class="message">
             <div class="message-header">
-                <span class="speaker-label">[JA] Speaker</span>
+                <span class="speaker-label">[JA] ${escapeHtml(name)}</span>
                 <span class="timestamp">${timestamp}</span>
             </div>
             <div class="message-text">${escapeHtml(text)}</div>

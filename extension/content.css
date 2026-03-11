@@ -1,9 +1,3 @@
-/*
- * content.css — Minimal host styles for the translator overlay.
- * All real styles live inside the Shadow DOM (content.js).
- * This file just ensures the host element doesn't interfere with Meet.
- */
-
 #meet-translator-host {
   all: initial !important;
   position: fixed !important;

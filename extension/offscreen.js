@@ -1,5 +1,6 @@
 let audioContext = null;
 let mediaStream = null;
+let micStream = null;
 let workletNode = null;
 let ws = null;
 let reconnectTimer = null;
@@ -43,14 +44,14 @@ async function startCapture(msg) {
         },
     });
 
-    audioContext = new AudioContext({ sampleRate: TARGET_SAMPLE_RATE });
+    audioContext = new AudioContext({ sampleRate: 48000 });
 
     const processorUrl = chrome.runtime.getURL("audio-processor.js");
     await audioContext.audioWorklet.addModule(processorUrl);
 
     const source = audioContext.createMediaStreamSource(mediaStream);
     workletNode = new AudioWorkletNode(audioContext, "pcm-processor", {
-        processorOptions: { bufferSize: 2048 },
+        processorOptions: { bufferSize: 2048, inputSampleRate: 48000, outputSampleRate: TARGET_SAMPLE_RATE },
     });
 
     workletNode.port.onmessage = (event) => {
@@ -59,6 +60,20 @@ async function startCapture(msg) {
 
     source.connect(workletNode);
     workletNode.connect(audioContext.destination);
+
+    // Mix in microphone audio (user's own voice)
+    try {
+        micStream = await navigator.mediaDevices.getUserMedia({
+            audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: false }
+        });
+        const micSource = audioContext.createMediaStreamSource(micStream);
+        const micGain = audioContext.createGain();
+        micGain.gain.value = 0.5;
+        micSource.connect(micGain);
+        micGain.connect(workletNode);
+    } catch (micErr) {
+        console.warn("[Offscreen] Mic not available, tab audio only:", micErr.message);
+    }
 
     connectWebSocket();
 }
@@ -83,6 +98,10 @@ function stopCapture() {
     if (mediaStream) {
         mediaStream.getTracks().forEach((t) => t.stop());
         mediaStream = null;
+    }
+    if (micStream) {
+        micStream.getTracks().forEach((t) => t.stop());
+        micStream = null;
     }
 }
 
